@@ -16,13 +16,13 @@
     "go",
     "csharp"
   ],
-  "homepage": "https://github.com/llm-dev-ops/llm-forge",
+  "homepage": "https://github.com/globalbusinessadvisors/llm-forge",
   "bugs": {
-    "url": "https://github.com/llm-dev-ops/llm-forge/issues"
+    "url": "https://github.com/globalbusinessadvisors/llm-forge/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/llm-dev-ops/llm-forge.git"
+    "url": "https://github.com/globalbusinessadvisors/llm-forge.git"
   },
   "license": "Apache-2.0",
   "author": "LLM-Dev-Ops Team",
