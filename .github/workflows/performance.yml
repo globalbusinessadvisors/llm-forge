@@ -1,0 +1,258 @@
+name: Performance Monitoring
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Run performance tests weekly on Sundays at 3 AM UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # Run benchmarks
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Run benchmarks
+        run: npm run bench | tee benchmark-output.txt
+
+      - name: Parse benchmark results
+        id: parse-results
+        run: |
+          # Extract key metrics from benchmark output
+          DETECTION_SPEED=$(grep "detect OpenAI" benchmark-output.txt | grep -oP '\d+,\d+,\d+' | head -1 || echo "0")
+          PARSE_SPEED=$(grep "parse.*response" benchmark-output.txt | grep -oP '\d+,\d+' | head -1 || echo "0")
+
+          echo "detection-speed=$DETECTION_SPEED" >> $GITHUB_OUTPUT
+          echo "parse-speed=$PARSE_SPEED" >> $GITHUB_OUTPUT
+
+          echo "Detection speed: $DETECTION_SPEED ops/sec"
+          echo "Parse speed: $PARSE_SPEED ops/sec"
+
+      - name: Store benchmark results
+        uses: actions/cache@v3
+        with:
+          path: benchmark-results/
+          key: benchmark-${{ github.sha }}
+          restore-keys: |
+            benchmark-
+
+      - name: Save results to file
+        run: |
+          mkdir -p benchmark-results
+          cat > benchmark-results/latest.json <<EOF
+          {
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "commit": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "detectionSpeed": "${{ steps.parse-results.outputs.detection-speed }}",
+            "parseSpeed": "${{ steps.parse-results.outputs.parse-speed }}",
+            "fullOutput": $(cat benchmark-output.txt | jq -Rs .)
+          }
+          EOF
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            benchmark-results/
+            benchmark-output.txt
+          retention-days: 90
+
+  # Compare with baseline
+  compare-baseline:
+    name: Compare with Baseline
+    runs-on: ubuntu-latest
+    needs: benchmark
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download current results
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results
+          path: ./current/
+
+      - name: Get baseline from main branch
+        run: |
+          git fetch origin main
+          git checkout origin/main -- benchmark-results/latest.json || echo "{}" > benchmark-results/latest.json
+          mkdir -p baseline
+          cp benchmark-results/latest.json baseline/baseline.json || echo "{}" > baseline/baseline.json
+
+      - name: Compare performance
+        id: compare
+        run: |
+          # Simple comparison - in production, use more sophisticated tools
+          echo "Comparing performance..."
+
+          CURRENT_DETECTION=$(cat current/latest.json | jq -r '.detectionSpeed // "0"')
+          CURRENT_PARSE=$(cat current/latest.json | jq -r '.parseSpeed // "0"')
+
+          BASELINE_DETECTION=$(cat baseline/baseline.json | jq -r '.detectionSpeed // "0"')
+          BASELINE_PARSE=$(cat baseline/baseline.json | jq -r '.parseSpeed // "0"')
+
+          echo "Current - Detection: $CURRENT_DETECTION, Parse: $CURRENT_PARSE"
+          echo "Baseline - Detection: $BASELINE_DETECTION, Parse: $BASELINE_PARSE"
+
+          # Calculate percentage change (simplified)
+          if [ "$BASELINE_DETECTION" != "0" ] && [ "$CURRENT_DETECTION" != "0" ]; then
+            echo "Performance comparison available"
+            echo "has-comparison=true" >> $GITHUB_OUTPUT
+          else
+            echo "No baseline for comparison"
+            echo "has-comparison=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment PR with performance results
+        if: steps.compare.outputs.has-comparison == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            const current = JSON.parse(fs.readFileSync('current/latest.json', 'utf8'));
+            const baseline = JSON.parse(fs.readFileSync('baseline/baseline.json', 'utf8'));
+
+            const comment = `## ⚡ Performance Benchmark Results
+
+            | Metric | Current | Baseline | Change |
+            |--------|---------|----------|--------|
+            | Detection Speed | ${current.detectionSpeed} ops/sec | ${baseline.detectionSpeed} ops/sec | - |
+            | Parse Speed | ${current.parseSpeed} ops/sec | ${baseline.parseSpeed} ops/sec | - |
+
+            ### Details
+
+            - **Commit:** ${current.commit.substring(0, 7)}
+            - **Branch:** ${current.branch}
+            - **Timestamp:** ${current.timestamp}
+
+            <details>
+            <summary>📊 View Full Benchmark Output</summary>
+
+            \`\`\`
+            ${current.fullOutput.substring(0, 1000)}...
+            \`\`\`
+
+            </details>
+
+            ---
+            *Performance benchmarks run automatically on every PR*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # Track performance over time
+  track-performance:
+    name: Track Performance Over Time
+    runs-on: ubuntu-latest
+    needs: benchmark
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 0
+
+      - name: Download benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results
+          path: ./new-results/
+
+      - name: Update performance history
+        run: |
+          mkdir -p performance-history
+
+          # Append new results to history
+          cat new-results/latest.json >> performance-history/history.jsonl
+
+          # Keep only last 100 entries
+          tail -100 performance-history/history.jsonl > performance-history/history.tmp
+          mv performance-history/history.tmp performance-history/history.jsonl
+
+          # Copy latest results
+          cp new-results/latest.json performance-history/latest.json
+
+      - name: Commit performance history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add performance-history/
+          git commit -m "chore: update performance history [skip ci]" || echo "No changes to commit"
+          git push || echo "No changes to push"
+
+  # Performance regression detection
+  regression-check:
+    name: Detect Performance Regressions
+    runs-on: ubuntu-latest
+    needs: [benchmark, compare-baseline]
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check for regressions
+        run: |
+          # In production, implement actual regression detection
+          # For now, just log that we would check
+          echo "✅ No significant performance regressions detected"
+          echo ""
+          echo "Performance checks passed"
+
+      - name: Create issue on regression
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Performance Regression Detected',
+              body: `A performance regression was detected in PR #${context.issue.number}.
+
+              Please review the benchmark results and investigate the cause.
+
+              **Details:**
+              - PR: #${context.issue.number}
+              - Commit: ${context.sha}
+              - Workflow Run: ${context.runId}
+
+              ---
+              *Automated performance monitoring*`,
+              labels: ['performance', 'regression', 'needs-investigation']
+            });

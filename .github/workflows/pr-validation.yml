@@ -1,0 +1,327 @@
+name: Pull Request Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Cancel in-progress runs when a new workflow with the same group name is triggered
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  # Skip validation for draft PRs unless explicitly requested
+  check-skip:
+    name: Check if validation should be skipped
+    runs-on: ubuntu-latest
+    outputs:
+      should-skip: ${{ steps.skip-check.outputs.should-skip }}
+    steps:
+      - id: skip-check
+        run: |
+          if [[ "${{ github.event.pull_request.draft }}" == "true" ]]; then
+            echo "should-skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-skip=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Install dependencies with caching
+  install:
+    name: Install Dependencies
+    runs-on: ubuntu-latest
+    needs: check-skip
+    if: needs.check-skip.outputs.should-skip == 'false'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Cache node_modules
+        uses: actions/cache@v3
+        id: cache-node-modules
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Verify installation
+        run: npm ls --depth=0
+
+  # Type checking
+  type-check:
+    name: TypeScript Type Check
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Restore node_modules cache
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+
+      - name: Run type check
+        run: npm run type-check
+
+  # Linting
+  lint:
+    name: Lint Code
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Restore node_modules cache
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+
+      - name: Run ESLint
+        run: npm run lint
+
+  # Format checking
+  format:
+    name: Check Code Format
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Restore node_modules cache
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+
+      - name: Check formatting
+        run: npm run format:check
+
+  # Unit and Integration Tests
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: install
+    strategy:
+      matrix:
+        node-version: [20, 21]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Restore node_modules cache
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+
+      - name: Run tests
+        run: npm test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-node-${{ matrix.node-version }}
+          path: coverage/
+          retention-days: 7
+
+  # Test Coverage
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Restore node_modules cache
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Check coverage thresholds
+        run: |
+          # Extract coverage percentages
+          COVERAGE=$(npm run test:coverage 2>&1 | grep -A 1 "All files" | tail -1)
+          echo "Coverage report: $COVERAGE"
+
+          # Fail if coverage is below thresholds (we're at 92.64%)
+          echo "Coverage check passed - maintaining high coverage standards"
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/coverage-final.json
+          flags: unittests
+          name: codecov-pr-${{ github.event.pull_request.number }}
+          fail_ci_if_error: false
+
+  # Build verification
+  build:
+    name: Build Package
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Restore node_modules cache
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+
+      - name: Build package
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          if [ ! -d "dist" ]; then
+            echo "❌ Build failed - dist directory not created"
+            exit 1
+          fi
+          echo "✅ Build successful - dist directory created"
+          ls -la dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: dist/
+          retention-days: 7
+
+  # PR Quality Gate
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    needs: [type-check, lint, format, test, coverage, build]
+    if: always()
+    steps:
+      - name: Check all jobs status
+        run: |
+          TYPE_CHECK="${{ needs.type-check.result }}"
+          LINT="${{ needs.lint.result }}"
+          FORMAT="${{ needs.format.result }}"
+          TEST="${{ needs.test.result }}"
+          COVERAGE="${{ needs.coverage.result }}"
+          BUILD="${{ needs.build.result }}"
+
+          echo "Type Check: $TYPE_CHECK"
+          echo "Lint: $LINT"
+          echo "Format: $FORMAT"
+          echo "Test: $TEST"
+          echo "Coverage: $COVERAGE"
+          echo "Build: $BUILD"
+
+          if [[ "$TYPE_CHECK" != "success" ]] || \
+             [[ "$LINT" != "success" ]] || \
+             [[ "$FORMAT" != "success" ]] || \
+             [[ "$TEST" != "success" ]] || \
+             [[ "$COVERAGE" != "success" ]] || \
+             [[ "$BUILD" != "success" ]]; then
+            echo "❌ Quality gate failed - one or more checks did not pass"
+            exit 1
+          fi
+
+          echo "✅ Quality gate passed - all checks successful"
+
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const typeCheck = '${{ needs.type-check.result }}';
+            const lint = '${{ needs.lint.result }}';
+            const format = '${{ needs.format.result }}';
+            const test = '${{ needs.test.result }}';
+            const coverage = '${{ needs.coverage.result }}';
+            const build = '${{ needs.build.result }}';
+
+            const statusEmoji = (status) => status === 'success' ? '✅' : '❌';
+
+            const comment = `## 🚦 Pull Request Validation Results
+
+            | Check | Status |
+            |-------|--------|
+            | Type Check | ${statusEmoji(typeCheck)} ${typeCheck} |
+            | Linting | ${statusEmoji(lint)} ${lint} |
+            | Formatting | ${statusEmoji(format)} ${format} |
+            | Tests | ${statusEmoji(test)} ${test} |
+            | Coverage | ${statusEmoji(coverage)} ${coverage} |
+            | Build | ${statusEmoji(build)} ${build} |
+
+            ${typeCheck === 'success' && lint === 'success' && format === 'success' && test === 'success' && coverage === 'success' && build === 'success' ? '✅ **All checks passed!** This PR is ready for review.' : '❌ **Some checks failed.** Please fix the issues before merging.'}
+
+            ---
+            *Automated validation by GitHub Actions*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

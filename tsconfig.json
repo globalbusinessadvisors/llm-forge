@@ -1,0 +1,61 @@
+{
+  "compilerOptions": {
+    // Language and Environment
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    // Type Checking - STRICT MODE (Enterprise Grade)
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    // exactOptionalPropertyTypes disabled for Zod compatibility
+    // "exactOptionalPropertyTypes": true,
+    "noImplicitReturns": true,
+
+    // Emit
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "removeComments": false,
+    "importHelpers": true,
+    "downlevelIteration": true,
+
+    // Interop Constraints
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+
+    // Skip Lib Check (for performance)
+    "skipLibCheck": true,
+
+    // Paths
+    "baseUrl": ".",
+    "paths": {
+      "@llm-forge/core": ["./src/core/index.ts"],
+      "@llm-forge/schema": ["./src/schema/index.ts"],
+      "@llm-forge/parsers": ["./src/parsers/index.ts"],
+      "@llm-forge/generators": ["./src/generators/index.ts"],
+      "@llm-forge/templates": ["./src/templates/index.ts"],
+      "@llm-forge/cli": ["./src/cli/index.ts"],
+      "@llm-forge/types": ["./src/types/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
+}

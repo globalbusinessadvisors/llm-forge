@@ -1,0 +1,68 @@
+{
+  "version": "2023-06-01",
+  "baseUrl": "https://api.anthropic.com/v1",
+  "description": "Minimal Anthropic API schema",
+  "models": [
+    {
+      "id": "claude-3-haiku-20240307",
+      "name": "Claude 3 Haiku",
+      "description": "Fast and efficient model",
+      "contextWindow": 200000,
+      "maxTokens": 4096
+    }
+  ],
+  "endpoints": [
+    {
+      "id": "simple_endpoint",
+      "path": "/simple",
+      "method": "GET",
+      "description": "A simple test endpoint",
+      "streaming": false,
+      "parameters": [
+        {
+          "name": "query",
+          "in": "query",
+          "type": "string",
+          "description": "Query parameter",
+          "required": false
+        }
+      ],
+      "responses": [
+        {
+          "statusCode": 200,
+          "description": "Success",
+          "contentType": "application/json",
+          "schema": "SimpleResponse"
+        }
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "SimpleResponse",
+      "kind": "object",
+      "description": "Simple response type",
+      "properties": [
+        {
+          "name": "message",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "Status",
+      "kind": "enum",
+      "description": "Status enum",
+      "values": [
+        { "value": "success" },
+        { "value": "error" }
+      ]
+    }
+  ]
+}

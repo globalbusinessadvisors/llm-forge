@@ -1,0 +1,379 @@
+{
+  "version": "2023-06-01",
+  "baseUrl": "https://api.anthropic.com/v1",
+  "description": "Anthropic Messages API for Claude AI models",
+  "models": [
+    {
+      "id": "claude-3-opus-20240229",
+      "name": "Claude 3 Opus",
+      "description": "Most powerful model for highly complex tasks",
+      "contextWindow": 200000,
+      "maxTokens": 4096
+    },
+    {
+      "id": "claude-3-sonnet-20240229",
+      "name": "Claude 3 Sonnet",
+      "description": "Balanced performance and speed",
+      "contextWindow": 200000,
+      "maxTokens": 4096
+    },
+    {
+      "id": "claude-3-haiku-20240307",
+      "name": "Claude 3 Haiku",
+      "description": "Fastest model for lightweight actions",
+      "contextWindow": 200000,
+      "maxTokens": 4096
+    }
+  ],
+  "endpoints": [
+    {
+      "id": "create_message",
+      "path": "/messages",
+      "method": "POST",
+      "description": "Send a structured list of input messages with text and/or image content, and the model will generate the next message in the conversation.",
+      "streaming": true,
+      "requestBody": {
+        "contentType": "application/json",
+        "required": true,
+        "schema": "CreateMessageRequest"
+      },
+      "responses": [
+        {
+          "statusCode": 200,
+          "description": "Successful response",
+          "contentType": "application/json",
+          "schema": "Message"
+        },
+        {
+          "statusCode": 400,
+          "description": "Invalid request",
+          "contentType": "application/json",
+          "schema": "ErrorResponse"
+        },
+        {
+          "statusCode": 401,
+          "description": "Authentication error",
+          "contentType": "application/json",
+          "schema": "ErrorResponse"
+        },
+        {
+          "statusCode": 429,
+          "description": "Rate limit exceeded",
+          "contentType": "application/json",
+          "schema": "ErrorResponse"
+        }
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "CreateMessageRequest",
+      "kind": "object",
+      "description": "Request to create a message",
+      "properties": [
+        {
+          "name": "model",
+          "type": "string",
+          "description": "The model that will complete your prompt",
+          "required": true
+        },
+        {
+          "name": "messages",
+          "type": {
+            "name": "MessageArray",
+            "kind": "array",
+            "items": "Message"
+          },
+          "description": "Input messages",
+          "required": true
+        },
+        {
+          "name": "max_tokens",
+          "type": "integer",
+          "description": "The maximum number of tokens to generate",
+          "required": true
+        },
+        {
+          "name": "temperature",
+          "type": "number",
+          "description": "Amount of randomness injected into the response",
+          "required": false
+        }
+      ],
+      "required": ["model", "messages", "max_tokens"]
+    },
+    {
+      "name": "Message",
+      "kind": "object",
+      "description": "A message in a conversation",
+      "properties": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "Unique message identifier",
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "description": "Object type",
+          "required": true
+        },
+        {
+          "name": "role",
+          "type": "Role",
+          "description": "Conversational role",
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": {
+            "name": "ContentBlockArray",
+            "kind": "array",
+            "items": "ContentBlock"
+          },
+          "description": "Content blocks",
+          "required": true
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "description": "The model that handled the request",
+          "required": true
+        },
+        {
+          "name": "stop_reason",
+          "type": "StopReason",
+          "description": "The reason we stopped sampling",
+          "required": false
+        },
+        {
+          "name": "usage",
+          "type": {
+            "name": "Usage",
+            "kind": "object",
+            "properties": [
+              {
+                "name": "input_tokens",
+                "type": "integer",
+                "required": true
+              },
+              {
+                "name": "output_tokens",
+                "type": "integer",
+                "required": true
+              }
+            ]
+          },
+          "description": "Token usage information",
+          "required": true
+        }
+      ],
+      "required": ["id", "type", "role", "content", "model", "usage"]
+    },
+    {
+      "name": "ContentBlock",
+      "kind": "union",
+      "description": "A block of content in a message",
+      "variants": ["TextBlock", "ImageBlock", "ToolUseBlock", "ToolResultBlock"]
+    },
+    {
+      "name": "TextBlock",
+      "kind": "object",
+      "description": "A text content block",
+      "properties": [
+        {
+          "name": "type",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "required": ["type", "text"]
+    },
+    {
+      "name": "ImageBlock",
+      "kind": "object",
+      "description": "An image content block",
+      "properties": [
+        {
+          "name": "type",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "source",
+          "type": {
+            "name": "ImageSource",
+            "kind": "object",
+            "properties": [
+              {
+                "name": "type",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "media_type",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "data",
+                "type": "string",
+                "description": "Base64-encoded image data",
+                "required": true
+              }
+            ]
+          },
+          "required": true
+        }
+      ],
+      "required": ["type", "source"]
+    },
+    {
+      "name": "ToolUseBlock",
+      "kind": "object",
+      "description": "A tool use content block",
+      "properties": [
+        {
+          "name": "type",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "required": ["type", "id", "name"]
+    },
+    {
+      "name": "ToolResultBlock",
+      "kind": "object",
+      "description": "A tool result content block",
+      "properties": [
+        {
+          "name": "type",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "tool_use_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "is_error",
+          "type": "boolean",
+          "required": false
+        }
+      ],
+      "required": ["type", "tool_use_id", "content"]
+    },
+    {
+      "name": "ErrorResponse",
+      "kind": "object",
+      "description": "Error response",
+      "properties": [
+        {
+          "name": "type",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "error",
+          "type": {
+            "name": "Error",
+            "kind": "object",
+            "properties": [
+              {
+                "name": "type",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "message",
+                "type": "string",
+                "required": true
+              }
+            ]
+          },
+          "required": true
+        }
+      ],
+      "required": ["type", "error"]
+    },
+    {
+      "name": "Role",
+      "kind": "enum",
+      "description": "Message role",
+      "values": [
+        { "value": "user" },
+        { "value": "assistant" }
+      ]
+    },
+    {
+      "name": "StopReason",
+      "kind": "enum",
+      "description": "Reason for stopping generation",
+      "values": [
+        { "value": "end_turn" },
+        { "value": "max_tokens" },
+        { "value": "stop_sequence" },
+        { "value": "tool_use" }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": "invalid_request_error",
+      "description": "Invalid request",
+      "statusCode": 400
+    },
+    {
+      "code": "authentication_error",
+      "description": "Authentication failed",
+      "statusCode": 401
+    },
+    {
+      "code": "permission_error",
+      "description": "Permission denied",
+      "statusCode": 403
+    },
+    {
+      "code": "not_found_error",
+      "description": "Resource not found",
+      "statusCode": 404
+    },
+    {
+      "code": "rate_limit_error",
+      "description": "Rate limit exceeded",
+      "statusCode": 429
+    },
+    {
+      "code": "api_error",
+      "description": "API error",
+      "statusCode": 500
+    },
+    {
+      "code": "overloaded_error",
+      "description": "Service overloaded",
+      "statusCode": 529
+    }
+  ]
+}

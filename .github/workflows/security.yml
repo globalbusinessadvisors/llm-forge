@@ -1,0 +1,347 @@
+name: Security Scanning
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+  schedule:
+    # Run security scans daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  issues: write
+  pull-requests: write
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # Dependency vulnerability scanning
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Run npm audit
+        run: |
+          npm audit --audit-level=moderate || true
+          npm audit --json > audit-results.json || true
+
+      - name: Check for high/critical vulnerabilities
+        run: |
+          HIGH_VULNS=$(cat audit-results.json | jq '.metadata.vulnerabilities.high // 0')
+          CRITICAL_VULNS=$(cat audit-results.json | jq '.metadata.vulnerabilities.critical // 0')
+
+          echo "High vulnerabilities: $HIGH_VULNS"
+          echo "Critical vulnerabilities: $CRITICAL_VULNS"
+
+          if [ "$HIGH_VULNS" -gt 0 ] || [ "$CRITICAL_VULNS" -gt 0 ]; then
+            echo "⚠️ Found high or critical vulnerabilities"
+            npm audit
+            # Don't fail on vulnerabilities, just warn
+            exit 0
+          else
+            echo "✅ No high or critical vulnerabilities found"
+          fi
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-results
+          path: audit-results.json
+          retention-days: 30
+
+  # CodeQL analysis
+  codeql:
+    name: CodeQL Security Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{matrix.language}}"
+
+  # Secret scanning
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog Secret Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+
+  # License compliance
+  license-check:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Check licenses
+        run: |
+          npx license-checker --summary --onlyAllow "MIT;Apache-2.0;ISC;BSD-2-Clause;BSD-3-Clause;0BSD;CC0-1.0;CC-BY-3.0;CC-BY-4.0;Unlicense" || true
+
+      - name: Generate license report
+        run: |
+          npx license-checker --json > licenses.json
+          echo "License report generated"
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: licenses.json
+          retention-days: 30
+
+  # SAST (Static Application Security Testing)
+  sast:
+    name: Static Security Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Run ESLint security plugin
+        run: |
+          npm install --no-save eslint-plugin-security
+          npx eslint --plugin security --rule 'security/detect-object-injection: error' src/ || true
+
+      - name: Check for common security issues
+        run: |
+          echo "Checking for common security issues..."
+
+          # Check for console.log in production code
+          if grep -r "console\\.log" src/ --exclude-dir=node_modules; then
+            echo "⚠️ Warning: console.log found in source code"
+          fi
+
+          # Check for eval usage
+          if grep -r "eval(" src/ --exclude-dir=node_modules; then
+            echo "❌ Error: eval() usage detected"
+            exit 1
+          fi
+
+          # Check for process.env in client code
+          if grep -r "process\\.env" src/ --exclude-dir=node_modules --exclude="*.test.ts"; then
+            echo "⚠️ Warning: process.env usage found"
+          fi
+
+          echo "✅ Security checks passed"
+
+  # Dependency review (for PRs)
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          deny-licenses: GPL-2.0, GPL-3.0, LGPL-2.0, LGPL-3.0
+          comment-summary-in-pr: always
+
+  # Security scorecards
+  scorecard:
+    name: OSSF Scorecard
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard analysis
+        uses: ossf/scorecard-action@v2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload Scorecard results to GitHub
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+
+  # Container scanning (if using Docker)
+  container-scan:
+    name: Container Image Scan
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for Dockerfile
+        id: check-dockerfile
+        run: |
+          if [ -f "Dockerfile" ]; then
+            echo "has-dockerfile=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-dockerfile=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker image
+        if: steps.check-dockerfile.outputs.has-dockerfile == 'true'
+        run: docker build -t llm-forge:${{ github.sha }} .
+
+      - name: Run Trivy scanner
+        if: steps.check-dockerfile.outputs.has-dockerfile == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: llm-forge:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results
+        if: steps.check-dockerfile.outputs.has-dockerfile == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Security summary
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [dependency-scan, codeql, secret-scan, license-check, sast]
+    if: always()
+    steps:
+      - name: Generate security summary
+        run: |
+          DEPENDENCY_SCAN="${{ needs.dependency-scan.result }}"
+          CODEQL="${{ needs.codeql.result }}"
+          SECRET_SCAN="${{ needs.secret-scan.result }}"
+          LICENSE_CHECK="${{ needs.license-check.result }}"
+          SAST="${{ needs.sast.result }}"
+
+          echo "## 🔒 Security Scan Results"
+          echo ""
+          echo "| Scan Type | Status |"
+          echo "|-----------|--------|"
+          echo "| Dependency Scan | ${DEPENDENCY_SCAN} |"
+          echo "| CodeQL Analysis | ${CODEQL} |"
+          echo "| Secret Scan | ${SECRET_SCAN} |"
+          echo "| License Check | ${LICENSE_CHECK} |"
+          echo "| SAST | ${SAST} |"
+          echo ""
+
+          if [[ "$DEPENDENCY_SCAN" == "success" ]] && \
+             [[ "$CODEQL" == "success" ]] && \
+             [[ "$SECRET_SCAN" == "success" ]] && \
+             [[ "$LICENSE_CHECK" == "success" ]] && \
+             [[ "$SAST" == "success" ]]; then
+            echo "✅ All security scans passed"
+          else
+            echo "⚠️ Some security scans failed or have warnings"
+          fi
+
+      - name: Comment PR with security results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const dependencyScan = '${{ needs.dependency-scan.result }}';
+            const codeql = '${{ needs.codeql.result }}';
+            const secretScan = '${{ needs.secret-scan.result }}';
+            const licenseCheck = '${{ needs.license-check.result }}';
+            const sast = '${{ needs.sast.result }}';
+
+            const statusEmoji = (status) => status === 'success' ? '✅' : '⚠️';
+
+            const comment = `## 🔒 Security Scan Results
+
+            | Scan Type | Status |
+            |-----------|--------|
+            | Dependency Scan | ${statusEmoji(dependencyScan)} ${dependencyScan} |
+            | CodeQL Analysis | ${statusEmoji(codeql)} ${codeql} |
+            | Secret Scan | ${statusEmoji(secretScan)} ${secretScan} |
+            | License Check | ${statusEmoji(licenseCheck)} ${licenseCheck} |
+            | SAST | ${statusEmoji(sast)} ${sast} |
+
+            ${dependencyScan === 'success' && codeql === 'success' && secretScan === 'success' && licenseCheck === 'success' && sast === 'success' ? '✅ **All security scans passed!**' : '⚠️ **Some security scans have warnings or failed.** Please review the details.'}
+
+            ---
+            *Automated security scanning by GitHub Actions*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
