@@ -1,6 +1,6 @@
 {
   "name": "@llm-dev-ops/llm-forge",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "Cross-provider SDK generator for Large Language Model APIs",
   "keywords": [
     "llm",
