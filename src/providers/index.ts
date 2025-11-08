@@ -16,6 +16,7 @@ export * from './openai-provider.js';
 export * from './anthropic-provider.js';
 export * from './mistral-provider.js';
 export * from './huggingface-provider.js';
+export * from './replicate-provider.js';
 export * from './all-providers.js';
 
 // Export model registry
@@ -26,6 +27,7 @@ import { OpenAIProvider } from './openai-provider.js';
 import { AnthropicProvider } from './anthropic-provider.js';
 import { MistralProvider } from './mistral-provider.js';
 import { HuggingFaceProvider } from './huggingface-provider.js';
+import { ReplicateProvider } from './replicate-provider.js';
 import {
   GoogleProvider,
   CohereProvider,
@@ -57,6 +59,7 @@ export function registerAllProviders(): void {
   registry.register(new BedrockProvider());
   registry.register(new OllamaProvider());
   registry.register(new HuggingFaceProvider());
+  registry.register(new ReplicateProvider());
 }
 
 /**

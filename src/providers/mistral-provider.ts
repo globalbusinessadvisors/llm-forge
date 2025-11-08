@@ -62,7 +62,10 @@ export class MistralProvider extends BaseProviderParser {
       apiVersion: 'v1',
       baseUrl: 'https://api.mistral.ai/v1',
       capabilities: {
-        streaming: true,
+        // Streaming currently not implemented - stub methods return empty chunks
+        // Set to false to accurately reflect current implementation status
+        // TODO: Implement proper Mistral AI streaming format validation and parsing
+        streaming: false,
         functionCalling: true,
         toolUse: true,
         vision: false,

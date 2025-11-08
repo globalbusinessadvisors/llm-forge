@@ -356,6 +356,12 @@ export class ProviderRegistry {
       // Ollama default port
       return { detected: true, provider: 'ollama' as Provider, confidence: 0.85, method: 'url' };
     }
+    if (lower.includes('huggingface.co') || lower.includes('api-inference.huggingface.co')) {
+      return { detected: true, provider: 'huggingface' as Provider, confidence: 0.9, method: 'url' };
+    }
+    if (lower.includes('replicate.com')) {
+      return { detected: true, provider: 'replicate' as Provider, confidence: 0.9, method: 'url' };
+    }
 
     return { detected: false, confidence: 0, method: 'url' };
   }
@@ -393,6 +399,19 @@ export class ProviderRegistry {
     // Ollama format
     if (obj.model && obj.message && !obj.choices && !obj.type) {
       return { detected: true, provider: 'ollama' as Provider, confidence: 0.75, method: 'response_format' };
+    }
+
+    // HuggingFace format (token-based)
+    if (obj.generated_text !== undefined || obj.token) {
+      return { detected: true, provider: 'huggingface' as Provider, confidence: 0.8, method: 'response_format' };
+    }
+
+    // Replicate format (prediction-based)
+    if (obj.id && obj.status && typeof obj.status === 'string' &&
+        (obj.status === 'starting' || obj.status === 'processing' ||
+         obj.status === 'succeeded' || obj.status === 'failed' ||
+         obj.status === 'canceled' || obj.status === 'aborted')) {
+      return { detected: true, provider: 'replicate' as Provider, confidence: 0.8, method: 'response_format' };
     }
 
     // Try model name detection

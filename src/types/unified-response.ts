@@ -24,6 +24,7 @@ export enum Provider {
   Fireworks = 'fireworks',
   Bedrock = 'bedrock',
   HuggingFace = 'huggingface',
+  Replicate = 'replicate',
 }
 
 /**
@@ -50,16 +51,52 @@ export enum ContentType {
 
 /**
  * Stop reason types
+ *
+ * Represents why an LLM stopped generating tokens.
+ * Normalized across all providers for consistency.
  */
 export enum StopReason {
+  /** Normal completion - model decided to end generation */
   EndTurn = 'end_turn',
+
+  /** Output token limit reached */
   MaxTokens = 'max_tokens',
+
+  /** Context window/input length limit exceeded */
+  ContextLength = 'context_length',
+
+  /** Custom stop sequence encountered */
   StopSequence = 'stop_sequence',
+
+  /** Tool/function call required */
   ToolUse = 'tool_use',
+
+  /** Content filtered by safety/moderation system */
   ContentFilter = 'content_filter',
-  Length = 'length',
-  FunctionCall = 'function_call',
+
+  /** Recitation/plagiarism filter (Google Gemini) */
+  Recitation = 'recitation',
+
+  /** Generation error occurred */
+  Error = 'error',
+
+  /** Generation canceled by user or system */
+  Canceled = 'canceled',
+
+  /** Unknown or not provided */
   Unknown = 'unknown',
+
+  /**
+   * @deprecated Use MaxTokens instead
+   * Kept for backward compatibility
+   */
+  Length = 'length',
+
+  /**
+   * @deprecated Use ToolUse instead
+   * Kept for backward compatibility
+   */
+  FunctionCall = 'function_call',
 }
 
 /**
@@ -202,6 +239,46 @@ export interface StreamChunk {
 }
 
 /**
+ * Stop reason metadata
+ *
+ * Provides additional context about why generation stopped,
+ * including the original provider-specific value.
+ */
+export interface StopReasonMetadata {
+  /** Original provider-specific finish_reason/stop_reason value */
+  originalValue: string | null;
+
+  /** Whether the original value was recognized and mapped */
+  wasRecognized: boolean;
+
+  /**
+   * Confidence level of the mapping
+   * - high: Exact match or provider-specific mapping
+   * - medium: Keyword-based fuzzy match
+   * - low: Unknown value, defaulted to Unknown
+   */
+  mappingConfidence: 'high' | 'medium' | 'low';
+
+  /** Provider-specific stop details */
+  details?: {
+    /** Stop sequence that triggered completion (if applicable) */
+    stopSequence?: string;
+
+    /** Recitation offset for plagiarism detection (Google) */
+    recitationOffset?: number;
+
+    /** Safety ratings that triggered content filter (Google) */
+    safetyRatings?: unknown;
+
+    /** Error message if stop was due to error */
+    errorMessage?: string;
+
+    /** Model-specific completion metadata */
+    [key: string]: unknown;
+  };
+}
+
+/**
  * Unified response from any LLM provider
  */
 export interface UnifiedResponse {
@@ -219,6 +296,9 @@ export interface UnifiedResponse {
 
   /** Stop reason */
   stopReason: StopReason;
+
+  /** Stop reason metadata (optional, provides additional context) */
+  stopReasonMetadata?: StopReasonMetadata;
 
   /** Token usage */
   usage: TokenUsage;
@@ -263,6 +343,9 @@ export interface UnifiedStreamResponse {
 
   /** Stop reason (when stream completes) */
   stopReason?: StopReason;
+
+  /** Stop reason metadata (when stream completes) */
+  stopReasonMetadata?: StopReasonMetadata;
 
   /** Usage (when stream completes) */
   usage?: TokenUsage;

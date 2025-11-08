@@ -297,18 +297,37 @@ export class OpenAIProvider extends BaseProviderParser {
         });
       }
 
+      // Handle tool calls with proper accumulation for streaming
       if (choice.delta.tool_calls) {
         for (const toolCall of choice.delta.tool_calls) {
-          if (toolCall.function?.name) {
+          // Accumulate tool call data (may span multiple chunks)
+          const accumulated = this.accumulateToolCall(toolCall.index, {
+            id: toolCall.id,
+            name: toolCall.function?.name,
+            arguments: toolCall.function?.arguments || '',
+          });
+
+          // Only emit tool use event if we have complete data
+          if (this.isToolCallComplete(accumulated)) {
+            // Safely parse accumulated arguments
+            const parsedArgs = this.safeJsonParse(
+              accumulated.arguments,
+              {},
+              `tool call '${accumulated.name}' arguments`
+            );
+
             chunks.push({
               type: 'content_block_start',
               index: toolCall.index,
               contentBlock: this.createToolUseContent(
-                toolCall.id || this.generateId(),
-                toolCall.function.name,
-                toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {}
+                accumulated.id!,
+                accumulated.name!,
+                parsedArgs
               ),
             });
+
+            // Clear accumulated data once emitted
+            this.clearAccumulatedToolCall(toolCall.index);
           }
         }
       }
@@ -354,11 +373,18 @@ export class OpenAIProvider extends BaseProviderParser {
       // Tool calls
       if (choice.message.tool_calls) {
         for (const toolCall of choice.message.tool_calls) {
+          // Safely parse tool call arguments
+          const parsedArgs = this.safeJsonParse(
+            toolCall.function.arguments,
+            {},
+            `tool call '${toolCall.function.name}' arguments`
+          );
+
           content.push(
             this.createToolUseContent(
               toolCall.id,
               toolCall.function.name,
-              JSON.parse(toolCall.function.arguments)
+              parsedArgs
             )
           );
         }

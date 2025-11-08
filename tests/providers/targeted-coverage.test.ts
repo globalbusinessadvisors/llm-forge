@@ -179,7 +179,7 @@ describe('Targeted Coverage Tests', () => {
       const provider = new TogetherProvider();
       const result = await provider.parseStream({
         id: 'test',
-        choices: [{ delta: { content: 'test' } }],
+        choices: [{ index: 0, delta: { content: 'test' }, finish_reason: null }],
       });
 
       expect(result.success).toBe(true);

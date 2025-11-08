@@ -147,6 +147,7 @@ export class AnthropicProvider extends BaseProviderParser {
 
   /**
    * Validate streaming chunk
+   * Enterprise-grade validation for Anthropic Server-Sent Events
    */
   protected validateStreamChunk(chunk: unknown): boolean {
     if (!chunk || typeof chunk !== 'object') {
@@ -154,7 +155,71 @@ export class AnthropicProvider extends BaseProviderParser {
       return false;
     }
 
-    return true; // Anthropic streaming has various event types
+    const obj = chunk as Record<string, unknown>;
+
+    // Validate event type field
+    if (!obj.type || typeof obj.type !== 'string') {
+      this.addError('Invalid chunk: missing or invalid type field');
+      return false;
+    }
+
+    // Validate known event types
+    const validTypes = [
+      'message_start',
+      'message_delta',
+      'message_stop',
+      'content_block_start',
+      'content_block_delta',
+      'content_block_stop',
+      'ping',
+      'error',
+    ];
+
+    if (!validTypes.includes(obj.type as string)) {
+      this.addError(`Invalid chunk: unknown event type "${obj.type}"`);
+      return false;
+    }
+
+    // Event-specific validation
+    if (obj.type === 'content_block_delta') {
+      if (!obj.delta || typeof obj.delta !== 'object') {
+        this.addError('Invalid content_block_delta: missing delta field');
+        return false;
+      }
+      if (typeof obj.index !== 'number') {
+        this.addError('Invalid content_block_delta: missing or invalid index');
+        return false;
+      }
+    }
+
+    if (obj.type === 'content_block_start') {
+      if (!obj.content_block || typeof obj.content_block !== 'object') {
+        this.addError('Invalid content_block_start: missing content_block field');
+        return false;
+      }
+      if (typeof obj.index !== 'number') {
+        this.addError('Invalid content_block_start: missing or invalid index');
+        return false;
+      }
+    }
+
+    if (obj.type === 'error') {
+      if (!obj.error || typeof obj.error !== 'object') {
+        this.addError('Invalid error event: missing error field');
+        return false;
+      }
+      const error = obj.error as Record<string, unknown>;
+      if (!error.type || typeof error.type !== 'string') {
+        this.addError('Invalid error event: error.type must be a string');
+        return false;
+      }
+      if (!error.message || typeof error.message !== 'string') {
+        this.addError('Invalid error event: error.message must be a string');
+        return false;
+      }
+    }
+
+    return true;
   }
 
   /**
@@ -206,10 +271,48 @@ export class AnthropicProvider extends BaseProviderParser {
 
   /**
    * Parse streaming chunk to unified format
+   * Handles all Anthropic Server-Sent Event types including errors
    */
   protected async parseStreamChunk(chunk: unknown): Promise<UnifiedStreamResponse> {
     const streamChunk = chunk as Record<string, unknown>;
     const chunks: StreamChunk[] = [];
+    let error: UnifiedError | undefined;
+
+    // Handle error events
+    if (streamChunk.type === 'error') {
+      const errorData = streamChunk.error as Record<string, unknown>;
+      error = {
+        code: errorData.type as string,
+        message: errorData.message as string,
+        type: 'streaming_error',
+      };
+
+      return {
+        id: this.generateId(),
+        provider: this.provider,
+        model: this.createModelInfo('unknown', this.provider),
+        chunks: [],
+        metadata: {
+          timestamp: this.getCurrentTimestamp(),
+        },
+        error,
+      };
+    }
+
+    // Handle ping events (keep-alive)
+    if (streamChunk.type === 'ping') {
+      // Ping events don't produce chunks but are valid
+      return {
+        id: this.generateId(),
+        provider: this.provider,
+        model: this.createModelInfo('unknown', this.provider),
+        chunks: [],
+        metadata: {
+          timestamp: this.getCurrentTimestamp(),
+          eventType: 'ping',
+        },
+      };
+    }
 
     // Handle different event types
     if (streamChunk.type === 'message_start') {
@@ -227,13 +330,18 @@ export class AnthropicProvider extends BaseProviderParser {
           contentBlock: this.createTextContent(''),
         });
       } else if (contentBlock.type === 'tool_use') {
+        // Tool use arguments may be incomplete, use safe parsing
+        const input = contentBlock.input
+          ? this.safeJsonParse(JSON.stringify(contentBlock.input), {}, 'tool use input')
+          : {};
+
         chunks.push({
           type: 'content_block_start',
           index,
           contentBlock: this.createToolUseContent(
             contentBlock.id as string,
             contentBlock.name as string,
-            {}
+            input
           ),
         });
       }
@@ -261,6 +369,12 @@ export class AnthropicProvider extends BaseProviderParser {
       chunks.push({
         type: 'message_stop',
       });
+    } else if (streamChunk.type === 'content_block_stop') {
+      // Handle content block completion
+      chunks.push({
+        type: 'content_block_stop',
+        index: streamChunk.index as number,
+      });
     }
 
     return {
@@ -270,7 +384,9 @@ export class AnthropicProvider extends BaseProviderParser {
       chunks,
       metadata: {
         timestamp: this.getCurrentTimestamp(),
+        eventType: streamChunk.type as string,
       },
+      error,
     };
   }
 

@@ -11,6 +11,7 @@ import { BaseProviderParser } from './base-provider.js';
 import type {
   Provider,
   UnifiedResponse,
+  UnifiedStreamResponse,
   UnifiedMessage,
   TokenUsage,
   StopReason,
@@ -18,6 +19,7 @@ import type {
   UnifiedError,
   ProviderMetadata,
   Content,
+  StreamChunk,
 } from '../types/unified-response.js';
 import { MessageRole } from '../types/unified-response.js';
 
@@ -65,6 +67,50 @@ interface HuggingFaceChatResponse {
     completion_tokens?: number;
     total_tokens?: number;
   };
+  error?: string;
+}
+
+/**
+ * Hugging Face streaming chunk (TGI format)
+ * Uses OpenAI-compatible streaming format
+ */
+interface HuggingFaceStreamChunk {
+  id: string;
+  object?: string;
+  created?: number;
+  model?: string;
+  choices: Array<{
+    index: number;
+    delta: {
+      role?: string;
+      content?: string;
+    };
+    finish_reason: string | null;
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+  error?: string;
+}
+
+/**
+ * Hugging Face token-based streaming chunk (raw Inference API format)
+ */
+interface HuggingFaceTokenStreamChunk {
+  token?: {
+    id?: number;
+    text: string;
+    logprob?: number;
+    special?: boolean;
+  };
+  generated_text?: string | null;
+  details?: {
+    finish_reason?: string;
+    generated_tokens?: number;
+    seed?: number;
+  } | null;
   error?: string;
 }
 
@@ -327,6 +373,328 @@ export class HuggingFaceProvider extends BaseProviderParser {
     }
 
     return undefined;
+  }
+
+  /**
+   * Validate Hugging Face streaming chunk
+   *
+   * Supports TWO streaming formats:
+   * 1. Token-based format (raw Inference API): { token: {...}, generated_text, details }
+   * 2. TGI format (OpenAI-compatible): { id, choices: [{delta, ...}] }
+   *
+   * Performs strict validation to ensure:
+   * - Chunk is a valid object
+   * - Has required fields for one of the supported formats
+   * - Error chunks are properly formatted
+   *
+   * @param chunk - Raw streaming chunk from Hugging Face
+   * @returns True if chunk is valid, false otherwise
+   */
+  protected validateStreamChunk(chunk: unknown): boolean {
+    // Null check
+    if (!chunk || typeof chunk !== 'object') {
+      this.addError('Invalid streaming chunk: must be a non-null object');
+      return false;
+    }
+
+    const obj = chunk as Record<string, unknown>;
+
+    // Check for error chunks - these are valid in both formats
+    if (obj.error) {
+      // Error chunks must have error field as string or object
+      if (typeof obj.error !== 'string' && typeof obj.error !== 'object') {
+        this.addError('Invalid error chunk: error field must be string or object');
+        return false;
+      }
+      return true;
+    }
+
+    // Detect format: Token-based OR TGI
+    const isTokenFormat = 'token' in obj || 'generated_text' in obj || 'details' in obj;
+    const isTGIFormat = 'choices' in obj && 'id' in obj;
+
+    if (isTokenFormat) {
+      // Validate token-based format
+      return this.validateTokenStreamChunk(obj);
+    } else if (isTGIFormat) {
+      // Validate TGI format
+      return this.validateTGIStreamChunk(obj);
+    } else {
+      this.addError('Invalid streaming chunk: must be token-based format (with token/generated_text/details) or TGI format (with id/choices)');
+      return false;
+    }
+  }
+
+  /**
+   * Validate token-based streaming chunk format
+   */
+  private validateTokenStreamChunk(obj: Record<string, unknown>): boolean {
+    // Token field validation (if present)
+    if (obj.token !== undefined && obj.token !== null) {
+      if (typeof obj.token !== 'object') {
+        this.addError('Invalid token-based chunk: token field must be an object');
+        return false;
+      }
+
+      const token = obj.token as Record<string, unknown>;
+      // Allow empty strings for special tokens (e.g., end-of-sequence)
+      if (token.text === undefined || typeof token.text !== 'string') {
+        this.addError('Invalid token-based chunk: token.text must be a string (can be empty for special tokens)');
+        return false;
+      }
+    }
+
+    // generated_text validation (optional, can be null)
+    if (obj.generated_text !== undefined && obj.generated_text !== null && typeof obj.generated_text !== 'string') {
+      this.addError('Invalid token-based chunk: generated_text must be string or null');
+      return false;
+    }
+
+    // details validation (optional, can be null)
+    if (obj.details !== undefined && obj.details !== null && typeof obj.details !== 'object') {
+      this.addError('Invalid token-based chunk: details must be object or null');
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Validate TGI streaming chunk format
+   */
+  private validateTGIStreamChunk(obj: Record<string, unknown>): boolean {
+    // Validate required id field
+    if (!obj.id || typeof obj.id !== 'string') {
+      this.addError('Invalid TGI chunk: missing or invalid id field (must be non-empty string)');
+      return false;
+    }
+
+    // Validate choices array
+    if (!obj.choices || !Array.isArray(obj.choices)) {
+      this.addError('Invalid TGI chunk: missing or invalid choices field (must be array)');
+      return false;
+    }
+
+    // Validate at least one choice exists
+    if (obj.choices.length === 0) {
+      this.addWarning('TGI chunk has empty choices array');
+      return true; // Not a hard error, just unusual
+    }
+
+    // Validate each choice structure
+    for (let i = 0; i < obj.choices.length; i++) {
+      const choice = obj.choices[i];
+
+      if (!choice || typeof choice !== 'object') {
+        this.addError(`Invalid TGI chunk: choice[${i}] must be an object`);
+        return false;
+      }
+
+      const choiceObj = choice as Record<string, unknown>;
+
+      // Validate index
+      if (typeof choiceObj.index !== 'number') {
+        this.addError(`Invalid TGI chunk: choice[${i}].index must be a number`);
+        return false;
+      }
+
+      // Validate delta object (required for streaming)
+      if (!choiceObj.delta || typeof choiceObj.delta !== 'object') {
+        this.addError(`Invalid TGI chunk: choice[${i}].delta must be an object`);
+        return false;
+      }
+
+      // Validate finish_reason (must be string or null)
+      if (choiceObj.finish_reason !== null &&
+          choiceObj.finish_reason !== undefined &&
+          typeof choiceObj.finish_reason !== 'string') {
+        this.addError(`Invalid TGI chunk: choice[${i}].finish_reason must be string or null`);
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Parse Hugging Face streaming chunk to unified format
+   *
+   * Supports TWO streaming formats:
+   * 1. Token-based format: { token: {text: "..."}, generated_text, details }
+   * 2. TGI format: { id, choices: [{delta: {content: "..."}}] }
+   *
+   * Converts streaming chunks to UnifiedStreamResponse format:
+   * - Extracts delta content from each choice/token
+   * - Processes finish_reason for completion signals
+   * - Handles usage information when provided
+   * - Supports error chunks with proper error extraction
+   *
+   * Enterprise features:
+   * - Comprehensive error handling
+   * - Null safety for all optional fields
+   * - Proper type conversions
+   * - Preserves chunk indices for multi-choice responses
+   * - Auto-detection of streaming format
+   *
+   * @param chunk - Validated streaming chunk from Hugging Face
+   * @returns Unified stream response with processed chunks
+   */
+  protected async parseStreamChunk(chunk: unknown): Promise<UnifiedStreamResponse> {
+    const obj = chunk as Record<string, unknown>;
+
+    // Handle error chunks (common to both formats)
+    const error = this.extractError(chunk);
+    if (error) {
+      return {
+        id: this.generateId(),
+        provider: this.provider,
+        model: this.createModelInfo('unknown', this.provider),
+        chunks: [],
+        metadata: {
+          timestamp: this.getCurrentTimestamp(),
+        },
+        error,
+      };
+    }
+
+    // Detect format and parse accordingly
+    const isTokenFormat = 'token' in obj || 'generated_text' in obj || 'details' in obj;
+
+    if (isTokenFormat) {
+      return this.parseTokenStreamChunk(chunk as HuggingFaceTokenStreamChunk);
+    } else {
+      return this.parseTGIStreamChunk(chunk as HuggingFaceStreamChunk);
+    }
+  }
+
+  /**
+   * Parse token-based streaming chunk
+   */
+  private async parseTokenStreamChunk(streamChunk: HuggingFaceTokenStreamChunk): Promise<UnifiedStreamResponse> {
+    const chunks: StreamChunk[] = [];
+    let stopReason: StopReason | undefined;
+    let usage: TokenUsage | undefined;
+
+    // Extract token text content
+    if (streamChunk.token?.text) {
+      chunks.push({
+        type: 'content_block_delta',
+        delta: {
+          type: 'text' as const,
+          text: streamChunk.token.text,
+        },
+        index: 0,
+      });
+    }
+
+    // Handle completion with generated_text (final chunk)
+    if (streamChunk.generated_text) {
+      chunks.push({
+        type: 'message_stop',
+        delta: {
+          stopReason: this.normalizeStopReason('stop'),
+        },
+        index: 0,
+      });
+    }
+
+    // Extract completion details
+    if (streamChunk.details) {
+      if (streamChunk.details.finish_reason) {
+        stopReason = this.normalizeStopReason(streamChunk.details.finish_reason);
+      }
+
+      if (streamChunk.details.generated_tokens) {
+        usage = {
+          inputTokens: 0, // Not provided in token format
+          outputTokens: streamChunk.details.generated_tokens,
+          totalTokens: streamChunk.details.generated_tokens,
+        };
+      }
+    }
+
+    // Generate unique ID for chunk
+    const id = this.generateId();
+
+    return {
+      id,
+      provider: this.provider,
+      model: this.createModelInfo('unknown', this.provider), // Model not provided in token format
+      chunks,
+      stopReason,
+      usage,
+      metadata: {
+        timestamp: this.getCurrentTimestamp(),
+        requestId: id,
+        format: 'token',
+      },
+    };
+  }
+
+  /**
+   * Parse TGI (OpenAI-compatible) streaming chunk
+   */
+  private async parseTGIStreamChunk(streamChunk: HuggingFaceStreamChunk): Promise<UnifiedStreamResponse> {
+    const chunks: StreamChunk[] = [];
+
+    // Extract model information
+    const modelInfo = streamChunk.model
+      ? this.createModelInfo(streamChunk.model, this.provider)
+      : this.createModelInfo('unknown', this.provider);
+
+    // Process each choice in the streaming chunk
+    for (const choice of streamChunk.choices) {
+      // Extract text delta content
+      if (choice.delta.content) {
+        chunks.push({
+          type: 'content_block_delta',
+          delta: {
+            type: 'text' as const,
+            text: choice.delta.content,
+          },
+          index: choice.index,
+        });
+      }
+
+      // Extract role information (typically only in first chunk)
+      if (choice.delta.role) {
+        chunks.push({
+          type: 'message_start',
+          delta: {},
+          index: choice.index,
+        });
+      }
+
+      // Handle completion signals
+      if (choice.finish_reason) {
+        chunks.push({
+          type: 'message_stop',
+          delta: {
+            stopReason: this.normalizeStopReason(choice.finish_reason),
+          },
+          index: choice.index,
+        });
+      }
+    }
+
+    // Extract usage information if provided (typically in final chunk)
+    const usage = streamChunk.usage ? this.extractUsage(streamChunk) : undefined;
+
+    // Construct unified stream response
+    return {
+      id: streamChunk.id,
+      provider: this.provider,
+      model: modelInfo,
+      chunks,
+      usage,
+      metadata: {
+        timestamp: streamChunk.created
+          ? new Date(streamChunk.created * 1000).toISOString()
+          : this.getCurrentTimestamp(),
+        requestId: streamChunk.id,
+        format: 'tgi',
+      },
+    };
   }
 
   canHandle(response: unknown, headers?: Record<string, string>, url?: string): boolean {

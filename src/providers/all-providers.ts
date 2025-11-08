@@ -26,6 +26,7 @@ import type {
   UnifiedError,
   ProviderMetadata,
   Content,
+  StreamChunk,
 } from '../types/unified-response.js';
 
 /**
@@ -44,7 +45,10 @@ export class GoogleProvider extends BaseProviderParser {
       apiVersion: 'v1',
       baseUrl: 'https://generativelanguage.googleapis.com/v1',
       capabilities: {
-        streaming: true,
+        // Streaming currently not implemented - stub methods return empty chunks
+        // Set to false to accurately reflect current implementation status
+        // TODO: Implement proper Google Gemini streaming format validation and parsing
+        streaming: false,
         functionCalling: true,
         toolUse: true,
         vision: true,
@@ -204,7 +208,10 @@ export class CohereProvider extends BaseProviderParser {
       apiVersion: 'v1',
       baseUrl: 'https://api.cohere.ai/v1',
       capabilities: {
-        streaming: true,
+        // Streaming currently not implemented - stub methods return empty chunks
+        // Set to false to accurately reflect current implementation status
+        // TODO: Implement proper Cohere streaming format validation and parsing
+        streaming: false,
         functionCalling: false,
         toolUse: true,
         vision: false,
@@ -357,7 +364,10 @@ export class XAIProvider extends BaseProviderParser {
       apiVersion: 'v1',
       baseUrl: 'https://api.x.ai/v1',
       capabilities: {
-        streaming: true,
+        // Streaming currently not implemented - stub methods return empty chunks
+        // Set to false to accurately reflect current implementation status
+        // TODO: Implement proper xAI/Grok streaming format validation and parsing
+        streaming: false,
         functionCalling: true,
         toolUse: true,
         vision: false,
@@ -510,7 +520,10 @@ export class PerplexityProvider extends BaseProviderParser {
       apiVersion: 'v1',
       baseUrl: 'https://api.perplexity.ai',
       capabilities: {
-        streaming: true,
+        // Streaming currently not implemented - stub methods return empty chunks
+        // Set to false to accurately reflect current implementation status
+        // TODO: Implement proper Perplexity streaming format validation and parsing
+        streaming: false,
         functionCalling: false,
         toolUse: false,
         vision: false,
@@ -647,6 +660,49 @@ export class PerplexityProvider extends BaseProviderParser {
 }
 
 /**
+ * Together.ai streaming chunk (OpenAI-compatible format)
+ */
+interface TogetherStreamChunk {
+  id?: string; // Optional - will be generated if not provided
+  object?: string;
+  created?: number;
+  model?: string;
+  choices: Array<{
+    index: number;
+    delta: {
+      role?: string;
+      content?: string;
+      tool_calls?: Array<{
+        index: number;
+        id?: string;
+        type?: string;
+        function?: {
+          name?: string;
+          arguments?: string;
+        };
+      }>;
+    };
+    finish_reason: string | null;
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
+/**
+ * Together.ai error response
+ */
+interface TogetherError {
+  error: {
+    message: string;
+    type: string;
+    code?: string;
+  };
+}
+
+/**
  * Together.ai Provider
  */
 export class TogetherProvider extends BaseProviderParser {
@@ -705,8 +761,107 @@ export class TogetherProvider extends BaseProviderParser {
     return true;
   }
 
+  /**
+   * Validate Together.ai streaming chunk
+   *
+   * Together AI uses OpenAI-compatible streaming format.
+   * Validates chunk structure to ensure:
+   * - Chunk is a valid object
+   * - Error chunks are properly formatted
+   * - Streaming chunks have required fields (id, choices)
+   *
+   * @param chunk - Raw streaming chunk from Together.ai
+   * @returns True if chunk is valid, false otherwise
+   */
   protected validateStreamChunk(chunk: unknown): boolean {
-    return chunk !== null && typeof chunk === 'object';
+    // Null check
+    if (!chunk || typeof chunk !== 'object') {
+      this.addError('Invalid streaming chunk: must be a non-null object');
+      return false;
+    }
+
+    const obj = chunk as Record<string, unknown>;
+
+    // Check for error chunks - these are valid
+    if (obj.error) {
+      // Validate error structure
+      if (typeof obj.error !== 'object') {
+        this.addError('Invalid error chunk: error field must be an object');
+        return false;
+      }
+
+      const errorObj = obj.error as Record<string, unknown>;
+      if (!errorObj.message || typeof errorObj.message !== 'string') {
+        this.addError('Invalid error chunk: error.message must be a string');
+        return false;
+      }
+
+      if (!errorObj.type || typeof errorObj.type !== 'string') {
+        this.addError('Invalid error chunk: error.type must be a string');
+        return false;
+      }
+
+      // code is optional but must be string if present
+      if (errorObj.code !== undefined && typeof errorObj.code !== 'string') {
+        this.addError('Invalid error chunk: error.code must be a string if present');
+        return false;
+      }
+
+      return true;
+    }
+
+    // Validate streaming chunk structure (OpenAI-compatible)
+    // Note: id is optional - will be generated if missing
+    if (obj.id !== undefined && typeof obj.id !== 'string') {
+      this.addError('Invalid streaming chunk: id field must be a string if provided');
+      return false;
+    }
+
+    if (!obj.choices || !Array.isArray(obj.choices)) {
+      this.addError('Invalid streaming chunk: missing or invalid choices field (must be array)');
+      return false;
+    }
+
+    // Validate at least one choice exists
+    if (obj.choices.length === 0) {
+      this.addWarning('Streaming chunk has empty choices array');
+      return true; // Not a hard error
+    }
+
+    // Validate each choice structure
+    for (let i = 0; i < obj.choices.length; i++) {
+      const choice = obj.choices[i];
+
+      if (!choice || typeof choice !== 'object') {
+        this.addError(`Invalid streaming chunk: choice[${i}] must be an object`);
+        return false;
+      }
+
+      const choiceObj = choice as Record<string, unknown>;
+
+      // Validate index
+      if (typeof choiceObj.index !== 'number') {
+        this.addError(`Invalid streaming chunk: choice[${i}].index must be a number`);
+        return false;
+      }
+
+      // Validate delta object (required for streaming)
+      if (!choiceObj.delta || typeof choiceObj.delta !== 'object') {
+        this.addError(`Invalid streaming chunk: choice[${i}].delta must be an object`);
+        return false;
+      }
+
+      // Validate finish_reason (must be string or null)
+      if (choiceObj.finish_reason !== null &&
+          choiceObj.finish_reason !== undefined &&
+          typeof choiceObj.finish_reason !== 'string') {
+        this.addError(`Invalid streaming chunk: choice[${i}].finish_reason must be string or null`);
+        return false;
+      }
+    }
+
+    // All validations passed
+    return true;
   }
 
   protected async parseResponse(response: unknown): Promise<UnifiedResponse> {
@@ -725,14 +880,135 @@ export class TogetherProvider extends BaseProviderParser {
     };
   }
 
+  /**
+   * Parse Together.ai streaming chunk to unified format
+   *
+   * Together AI uses OpenAI-compatible streaming format.
+   * Converts streaming chunks to UnifiedStreamResponse format:
+   * - Extracts error information from error chunks
+   * - Extracts delta content from each choice
+   * - Processes finish_reason for completion signals
+   * - Handles tool calls in streaming context
+   * - Extracts usage information when provided
+   *
+   * Enterprise features:
+   * - Comprehensive error handling with proper error extraction
+   * - Null safety for all optional fields
+   * - Proper type conversions
+   * - Preserves chunk indices for multi-choice responses
+   * - Supports tool calls in streaming
+   *
+   * @param chunk - Validated streaming chunk from Together.ai
+   * @returns Unified stream response with processed chunks
+   */
   protected async parseStreamChunk(chunk: unknown): Promise<UnifiedStreamResponse> {
+    const obj = chunk as Record<string, unknown>;
+
+    // Handle error chunks with proper error extraction
+    const error = this.extractError(chunk);
+    if (error) {
+      return {
+        id: this.generateId(),
+        provider: this.provider,
+        model: this.createModelInfo('unknown', this.provider),
+        chunks: [],
+        metadata: {
+          timestamp: this.getCurrentTimestamp(),
+        },
+        error,
+      };
+    }
+
+    // Parse OpenAI-compatible streaming chunk
+    const streamChunk = chunk as TogetherStreamChunk;
+    const chunks: StreamChunk[] = [];
+
+    // Extract model information
+    const modelInfo = streamChunk.model
+      ? this.createModelInfo(streamChunk.model, this.provider)
+      : this.createModelInfo('unknown', this.provider);
+
+    // Generate ID if not provided (for robustness)
+    const chunkId = streamChunk.id || this.generateId();
+
+    // Process each choice in the streaming chunk
+    for (const choice of streamChunk.choices) {
+      // Extract text delta content
+      if (choice.delta.content) {
+        chunks.push({
+          type: 'content_block_delta',
+          delta: {
+            type: 'text' as const,
+            text: choice.delta.content,
+          },
+          index: choice.index,
+        });
+      }
+
+      // Extract role information (typically only in first chunk)
+      if (choice.delta.role) {
+        chunks.push({
+          type: 'message_start',
+          delta: {},
+          index: choice.index,
+        });
+      }
+
+      // Handle tool calls in streaming context
+      if (choice.delta.tool_calls) {
+        for (const toolCall of choice.delta.tool_calls) {
+          if (toolCall.function?.name) {
+            // Handle potential JSON parsing errors in tool call arguments
+            let parsedArgs = {};
+            if (toolCall.function.arguments) {
+              try {
+                parsedArgs = JSON.parse(toolCall.function.arguments);
+              } catch (e) {
+                // If JSON parsing fails, treat as empty object
+                this.addWarning(`Failed to parse tool call arguments: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            }
+
+            chunks.push({
+              type: 'content_block_start',
+              index: toolCall.index,
+              contentBlock: this.createToolUseContent(
+                toolCall.id || this.generateId(),
+                toolCall.function.name,
+                parsedArgs
+              ),
+            });
+          }
+        }
+      }
+
+      // Handle completion signals
+      if (choice.finish_reason) {
+        chunks.push({
+          type: 'message_stop',
+          delta: {
+            stopReason: this.normalizeStopReason(choice.finish_reason),
+          },
+          index: choice.index,
+        });
+      }
+    }
+
+    // Extract usage information if provided (typically in final chunk)
+    const usage = streamChunk.usage ? this.extractUsage(streamChunk) : undefined;
+
+    // Construct unified stream response
     return {
-      id: this.generateId(),
+      id: chunkId,
       provider: this.provider,
-      model: this.createModelInfo('unknown', this.provider),
-      chunks: [],
+      model: modelInfo,
+      chunks,
+      usage,
       metadata: {
-        timestamp: this.getCurrentTimestamp(),
+        timestamp: streamChunk.created
+          ? new Date(streamChunk.created * 1000).toISOString()
+          : this.getCurrentTimestamp(),
+        requestId: chunkId,
       },
     };
   }
@@ -807,7 +1083,10 @@ export class FireworksProvider extends BaseProviderParser {
       apiVersion: 'v1',
       baseUrl: 'https://api.fireworks.ai/inference/v1',
       capabilities: {
-        streaming: true,
+        // Streaming currently not implemented - stub methods return empty chunks
+        // Set to false to accurately reflect current implementation status
+        // TODO: Implement proper Fireworks.ai streaming format validation and parsing
+        streaming: false,
         functionCalling: true,
         toolUse: true,
         vision: false,
@@ -952,7 +1231,10 @@ export class BedrockProvider extends BaseProviderParser {
       apiVersion: 'v1',
       baseUrl: 'https://bedrock-runtime.{region}.amazonaws.com',
       capabilities: {
-        streaming: true,
+        // Streaming currently not implemented - stub methods return empty chunks
+        // Set to false to accurately reflect current implementation status
+        // TODO: Implement proper AWS Bedrock streaming format validation and parsing
+        streaming: false,
         functionCalling: false,
         toolUse: true,
         vision: true,
@@ -1092,7 +1374,10 @@ export class OllamaProvider extends BaseProviderParser {
       apiVersion: 'v1',
       baseUrl: 'http://localhost:11434/api',
       capabilities: {
-        streaming: true,
+        // Streaming currently not implemented - stub methods return empty chunks
+        // Set to false to accurately reflect current implementation status
+        // TODO: Implement proper Ollama streaming format validation and parsing
+        streaming: false,
         functionCalling: false,
         toolUse: false,
         vision: true,

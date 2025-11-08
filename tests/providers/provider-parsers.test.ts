@@ -279,7 +279,7 @@ describe('Provider Parsers', () => {
       const registry = getRegistry();
       const providers = registry.getProviders();
 
-      expect(providers.length).toBe(12);
+      expect(providers.length).toBe(13); // Updated: includes Replicate provider
     });
 
     it('should get provider metadata', () => {
