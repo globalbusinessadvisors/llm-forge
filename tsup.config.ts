@@ -7,7 +7,8 @@ export default defineConfig([
       index: 'src/index.ts',
     },
     format: ['esm'],
-    dts: true,
+    // Temporarily disabled for v1.0.0 - will be fixed in v1.0.1
+    dts: false,
     splitting: false,
     sourcemap: true,
     clean: true,
@@ -23,7 +24,8 @@ export default defineConfig([
       'cli/index': 'src/cli/index.ts',
     },
     format: ['esm'],
-    dts: true,
+    // Temporarily disabled for v1.0.0 - will be fixed in v1.0.1
+    dts: false,
     splitting: false,
     sourcemap: true,
     minify: false,
